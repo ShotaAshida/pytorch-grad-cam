@@ -4,6 +4,8 @@ import numpy as np
 import torch
 from torch.autograd import Function
 from torchvision import models
+import glob
+from tqdm import tqdm
 
 class FeatureExtractor():
     """ Class for extracting activations and 
@@ -72,12 +74,12 @@ def preprocess_image(img):
     return input
 
 
-def show_cam_on_image(img, mask):
+def show_cam_on_image(img, mask, outpath):
     heatmap = cv2.applyColorMap(np.uint8(255 * mask), cv2.COLORMAP_JET)
     heatmap = np.float32(heatmap) / 255
     cam = heatmap + np.float32(img)
     cam = cam / np.max(cam)
-    cv2.imwrite("cam.jpg", np.uint8(255 * cam))
+    cv2.imwrite(outpath, np.uint8(255 * cam))
 
 
 class GradCam:
@@ -207,8 +209,8 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--use-cuda', action='store_true', default=False,
                         help='Use NVIDIA GPU acceleration')
-    parser.add_argument('--image-path', type=str, default='./examples/both.png',
-                        help='Input image path')
+#    parser.add_argument('--image-path', type=str, default='./examples/both.png',
+#                        help='Input image path')
     args = parser.parse_args()
     args.use_cuda = args.use_cuda and torch.cuda.is_available()
     if args.use_cuda:
@@ -241,28 +243,46 @@ if __name__ == '__main__':
     # Can work with any model, but it assumes that the model has a
     # feature method, and a classifier method,
     # as in the VGG models in torchvision.
-    model = models.resnet50(pretrained=True)
+    checkpoint_all = torch.load('/Users/omushota/lab/result/train_cls_all_20201009-113516/iteration_108600.pt', map_location='cpu')
+    all_state_dict = OrderedDict()
+    for k, v in checkpoint_all['model_state_dict'].items():
+        name = k
+        if name.startswith('module.'):
+            name = name[7:]  # remove 'module.' of dataparallel
+        all_state_dict[name] = v
+    all_state_dict
+
+    model = models.resnet50(pretrained=False)
+    model.fc = nn.Linear(2048, 70, bias=True)
+    model.load_state_dict(all_state_dict)
+
     grad_cam = GradCam(model=model, feature_module=model.layer4, \
                        target_layer_names=["2"], use_cuda=args.use_cuda)
 
-    img = cv2.imread(args.image_path, 1)
-    img = np.float32(cv2.resize(img, (224, 224))) / 255
-    input = preprocess_image(img)
+    pathes = glob.glob('~/lab/images/test/*')
 
-    # If None, returns the map for the highest scoring category.
-    # Otherwise, targets the requested index.
-    target_index = None
-    mask = grad_cam(input, target_index)
+    for path in tqdm(pathes):
+        out_dir_base = '~/lab/images/'
 
-    show_cam_on_image(img, mask)
+        img = cv2.imread(path, 1)
+        img = np.float32(cv2.resize(img, (224, 224))) / 255
+        input = preprocess_image(img)
 
-    gb_model = GuidedBackpropReLUModel(model=model, use_cuda=args.use_cuda)
-    print(model._modules.items())
-    gb = gb_model(input, index=target_index)
-    gb = gb.transpose((1, 2, 0))
-    cam_mask = cv2.merge([mask, mask, mask])
-    cam_gb = deprocess_image(cam_mask*gb)
-    gb = deprocess_image(gb)
+        # If None, returns the map for the highest scoring category.
+        # Otherwise, targets the requested index.
+        target_index = None
+        mask = grad_cam(input, target_index)
 
-    cv2.imwrite('gb.jpg', gb)
-    cv2.imwrite('cam_gb.jpg', cam_gb)
+        outpath = out_dir_base + 'cam/' + path
+        show_cam_on_image(img, mask, outpath)
+
+        gb_model = GuidedBackpropReLUModel(model=model, use_cuda=args.use_cuda)
+        print(model._modules.items())
+        gb = gb_model(input, index=target_index)
+        gb = gb.transpose((1, 2, 0))
+        cam_mask = cv2.merge([mask, mask, mask])
+        cam_gb = deprocess_image(cam_mask*gb)
+        gb = deprocess_image(gb)
+
+        cv2.imwrite(out_dir_base + 'gb/' + path, gb)
+        cv2.imwrite(out_dir_base + 'cam_gb/' + path, cam_gb)
